@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+  <title>Lvan 无痕去水印 - 本地 AI 图片去水印</title>
+  <meta name="description" content="免费、本地运行的 AI 图片去水印工具：涂抹水印即可无痕去除，不留白条和阴影，图片不上传服务器。" />
+  <meta name="theme-color" content="#4f46e5" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%234f46e5'/%3E%3Cpath d='M18 44 L32 16 L46 44' stroke='white' stroke-width='6' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="css/style.css" />
+  <script>
+    // 注册 Service Worker 以启用跨源隔离（多线程 CPU 推理快 4~8 倍）
+    (function () {
+      if (window.crossOriginIsolated || !('serviceWorker' in navigator)) return;
+      if (!(location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) return;
+      navigator.serviceWorker.register('sw.js').then(function (reg) {
+        if (sessionStorage.getItem('coi-reloaded')) return;
+        var reload = function () { sessionStorage.setItem('coi-reloaded', '1'); location.reload(); };
+        if (reg.active && !navigator.serviceWorker.controller) reload();
+        else navigator.serviceWorker.addEventListener('controllerchange', reload);
+      }).catch(function () {});
+    })();
+  </script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">L</span>
+      <span class="title">Lvan 无痕去水印</span>
+    </div>
+    <div class="top-actions">
+      <button id="btnOpen" class="btn" title="打开图片 (Ctrl+O)">📂 <span class="lbl">打开</span></button>
+      <button id="btnUndo" class="btn icon" title="撤销 (Ctrl+Z)" disabled>↶</button>
+      <button id="btnRedo" class="btn icon" title="重做 (Ctrl+Shift+Z)" disabled>↷</button>
+      <button id="btnSettings" class="btn icon" title="设置">⚙</button>
+      <button id="btnDownload" class="btn primary" disabled>⬇ <span class="lbl">保存</span></button>
+    </div>
+    <input id="fileInput" type="file" accept="image/*" hidden />
+    <input id="batchInput" type="file" accept="image/*" multiple hidden />
+    <input id="modelInput" type="file" accept=".onnx" hidden />
+  </header>
+
+  <main id="stage" class="stage">
+    <div id="empty" class="empty">
+      <div class="drop">
+        <div class="drop-icon">🖼️</div>
+        <h2>点击、拖拽或粘贴图片</h2>
+        <p>打开图片后<b>自动识别并去除</b>水印；没识别到的，用画笔涂一下即可</p>
+        <button id="btnOpen2" class="btn primary big">选择图片</button>
+        <ul class="features">
+          <li>🤖 <b>自动识别</b>抖音号、小红书号、平铺/倾斜半透明水印和角落 Logo</li>
+          <li>🎯 只修复水印区域，其余像素与原图<b>完全一致</b></li>
+          <li>🪄 自动扩展边缘，连同水印的<b>描边、阴影、光晕</b>一起去除</li>
+          <li>🔍 半透明水印自动<b>反向还原</b>真实像素，人脸文字不变形</li>
+          <li>🔒 全程在浏览器本地运行，图片<b>不上传</b>任何服务器</li>
+        </ul>
+      </div>
+    </div>
+    <div id="viewport" class="viewport" hidden>
+      <div id="canvasWrap" class="canvas-wrap">
+        <canvas id="imgCanvas"></canvas>
+        <canvas id="origCanvas" hidden></canvas>
+        <canvas id="maskCanvas" class="mask"></canvas>
+        <canvas id="previewCanvas" class="mask"></canvas>
+      </div>
+      <div id="brushCursor" class="brush-cursor" hidden></div>
+      <div id="compareTag" class="compare-tag" hidden>原图</div>
+    </div>
+    <div id="busy" class="busy" hidden>
+      <div class="busy-card">
+        <div class="spinner"></div>
+        <div id="busyText">处理中…</div>
+        <div class="progress"><div id="busyBar"></div></div>
+        <div id="busySub" class="sub"></div>
+      </div>
+    </div>
+  </main>
+
+  <footer class="toolbar" id="toolbar">
+    <div class="tools seg" role="group">
+      <button class="tool active" data-tool="brush" title="画笔 (B)">🖌 <span>画笔</span></button>
+      <button class="tool" data-tool="rect" title="框选 (R)">⬚ <span>框选</span></button>
+      <button class="tool" data-tool="eraser" title="橡皮擦 (E)">⌫ <span>擦除</span></button>
+      <button class="tool" data-tool="pan" title="移动 (H / 按住空格)">✋ <span>移动</span></button>
+    </div>
+    <label class="slider">
+      <span>笔刷</span>
+      <input id="brushSize" type="range" min="4" max="160" value="36" />
+      <b id="brushVal">36</b>
+    </label>
+    <div class="tb-actions">
+      <button id="btnClear" class="btn" title="清除涂抹">清除</button>
+      <button id="btnCompare" class="btn" title="按住查看原图">按住对比</button>
+      <button id="btnFit" class="btn icon" title="适应窗口 (0)">⤢</button>
+      <button id="btnDetect" class="btn" title="自动识别水印 (A)" disabled>🤖 识别</button>
+      <button id="btnRun" class="btn primary run" disabled>✨ 一键去水印</button>
+    </div>
+  </footer>
+
+  <aside id="settings" class="panel" hidden>
+    <div class="panel-head">
+      <h3>设置</h3>
+      <button id="btnCloseSettings" class="btn icon">✕</button>
+    </div>
+    <div class="field">
+      <label>打开图片后</label>
+      <div class="seg small">
+        <button class="opt" data-autorun="1">自动识别并去除</button>
+        <button class="opt" data-autorun="0">手动</button>
+      </div>
+      <p class="hint">没有涂抹时点「一键去水印」也会先自动识别。识别结果显示为红色，可用画笔/擦除修改。</p>
+    </div>
+    <div class="field">
+      <label>自动识别范围</label>
+      <div class="seg small">
+        <button class="opt" data-scope="watermark">只去水印（推荐）</button>
+        <button class="opt" data-scope="all">所有文字</button>
+      </div>
+      <p class="hint">「只去水印」：半透明文字水印 + 图片四周和角落的文字/Logo，画面中间的正常文字（招牌等）会保留。</p>
+    </div>
+    <div class="field">
+      <label>修复模式</label>
+      <div class="seg small">
+        <button class="opt active" data-mode="auto">智能（推荐）</button>
+        <button class="opt" data-mode="inpaint">仅 AI 重绘</button>
+      </div>
+      <p class="hint">智能模式会识别半透明水印，直接还原水印下面的真实像素；不透明水印、Logo 用 AI 补画。</p>
+    </div>
+    <div class="field">
+      <label>边缘扩展 <b id="expandVal">自动</b></label>
+      <input id="expand" type="range" min="0" max="40" value="0" />
+      <p class="hint">把涂抹区域向外扩几个像素，覆盖水印的描边、阴影和光晕。出现残影时调大，0 = 自动。</p>
+    </div>
+    <div class="field">
+      <label>保存格式</label>
+      <div class="seg small">
+        <button class="opt active" data-format="png">PNG（无损）</button>
+        <button class="opt" data-format="jpeg">JPG（体积小）</button>
+        <button class="opt" data-format="webp">WebP</button>
+      </div>
+      <p class="hint">PNG 无损：除水印区域外与原图逐像素一致。</p>
+    </div>
+    <div class="field">
+      <label>批量处理</label>
+      <button id="btnBatch" class="btn block">📚 批量去水印（选择多张图片）</button>
+      <p class="hint">默认每张图自动识别水印。如果当前图片上有涂抹，则所有图片都套用相同位置（适合识别不到的同位置 Logo）。</p>
+    </div>
+    <div class="field">
+      <label>AI 模型</label>
+      <div id="modelStatus" class="model-status">未加载（首次使用会自动下载约 200MB，之后离线可用）</div>
+      <div class="row">
+        <button id="btnLoadModel" class="btn">预先下载</button>
+        <button id="btnLocalModel" class="btn">选择本地模型</button>
+        <button id="btnClearCache" class="btn">清除缓存</button>
+      </div>
+      <p class="hint">下载慢时，可手动下载 <a href="https://hf-mirror.com/Carve/LaMa-ONNX/resolve/main/lama_fp32.onnx" target="_blank" rel="noopener">lama_fp32.onnx</a> 后点「选择本地模型」。</p>
+    </div>
+    <div class="field about">
+      <p>快捷键：A 自动识别 · Enter 一键去水印 · B 画笔 · R 框选 · E 擦除 · 空格 拖动 · [ ] 笔刷大小 · 滚轮 缩放 · Ctrl+Z 撤销</p>
+      <p>请仅处理您拥有版权或已获授权的图片。</p>
+    </div>
+  </aside>
+
+  <div id="batchPanel" class="modal" hidden>
+    <div class="modal-card">
+      <div class="panel-head">
+        <h3>批量去水印</h3>
+        <button id="btnCloseBatch" class="btn icon">✕</button>
+      </div>
+      <div id="batchList" class="batch-list"></div>
+      <div class="row end">
+        <button id="btnBatchAll" class="btn primary" disabled>全部保存</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
