@@ -1,0 +1,12 @@
+{
+  "name": "lvan-watermark-remover",
+  "version": "1.0.0",
+  "description": "Lvan 无痕去水印：浏览器本地运行的 AI 图片去水印工具",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "python3 -m http.server 8080",
+    "test": "node tests/core.test.mjs"
+  },
+  "license": "MIT"
+}
