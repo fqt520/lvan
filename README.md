@@ -49,6 +49,21 @@
 
 仓库已配置 GitHub Pages 自动部署：在仓库 **Settings → Pages → Source** 选择 **GitHub Actions**，合并到 `main` 分支后即可通过 `https://<用户名>.github.io/lvan/` 访问，手机、电脑都能用。
 
+### 部署到自己的 VPS（国内访问更快）
+
+在 VPS 上用 root 执行一行命令即可（Ubuntu / Debian / CentOS / Rocky / AlmaLinux）：
+
+```bash
+# 只有 IP：
+curl -fsSL https://raw.githubusercontent.com/fqt520/lvan/main/deploy/install.sh | bash
+# 有域名（先把域名解析到 VPS，自动申请 HTTPS 证书，推荐）：
+curl -fsSL https://raw.githubusercontent.com/fqt520/lvan/main/deploy/install.sh | DOMAIN=你的域名 bash
+```
+
+脚本会安装 nginx、下载网站代码，并把 AI 模型和推理引擎**下载到 VPS 本地**（之后用户访问不再依赖 huggingface / CDN），配置多线程所需的响应头，有域名时自动配置 HTTPS。再次运行即为升级。
+
+> 建议用域名 + HTTPS：浏览器只在 HTTPS 下才开放显卡加速和多线程，纯 IP 的 http 访问在手机上会慢很多。国内 VPS 绑定域名需要 ICP 备案；香港/海外 VPS 不需要。别忘了在云服务商的安全组里放行 80 和 443 端口。
+
 ### 本地运行
 
 需要一个静态文件服务器（浏览器不允许直接双击 `index.html` 加载模块脚本）：
@@ -87,6 +102,7 @@ js/detect.js      自动识别水印：文字检测 + 半透明判定 + 笔画�
 js/core.js        核心：裁剪、分块、镜像填充、选区扩展与羽化、回填
 js/translucent.js 半透明水印反向还原
 sw.js             Service Worker：开启跨源隔离以使用多线程 WASM
+deploy/install.sh VPS 一键部署脚本（nginx + 本地模型 + 可选 HTTPS）
 tests/            核心算法测试：node tests/core.test.mjs
 ```
 
