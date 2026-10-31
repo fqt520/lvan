@@ -11,6 +11,8 @@ import { MODEL_SIZE } from './core.js';
 
 const ORT_VERSION = '1.20.1';
 const ORT_SOURCES = [
+  // 自己的服务器上部署时（deploy/install.sh 会下载到这里），优先用本地文件
+  new URL('../vendor/ort/', import.meta.url).href,
   `https://cdn.jsdelivr.net/npm/onnxruntime-web@${ORT_VERSION}/dist/`,
   `https://registry.npmmirror.com/onnxruntime-web/${ORT_VERSION}/files/dist/`,
   `https://unpkg.com/onnxruntime-web@${ORT_VERSION}/dist/`,
