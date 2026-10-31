@@ -4,6 +4,8 @@
  * 模型：LaMa（Large Mask Inpainting, big-lama），目前开源里去水印 / 物体消除效果最好的模型之一，
  * IOPaint(lama-cleaner) 以及很多去水印小程序用的都是它。
  * ONNX 版本来自 https://huggingface.co/Carve/LaMa-ONNX （Apache-2.0）。
+ *
+ * 自动识别用 PP-OCRv4 文字检测模型（4.7MB），来自 https://huggingface.co/SWHL/RapidOCR （Apache-2.0）。
  */
 import { MODEL_SIZE } from './core.js';
 
@@ -14,14 +16,22 @@ const ORT_SOURCES = [
   `https://unpkg.com/onnxruntime-web@${ORT_VERSION}/dist/`,
 ];
 
-const MODEL_FILE = 'lama_fp32.onnx';
-const MODEL_SIZE_BYTES = 208044816;
-const MODEL_PATH = 'Carve/LaMa-ONNX/resolve/main/' + MODEL_FILE;
+export const LAMA = {
+  file: 'lama_fp32.onnx',
+  size: 208044816,
+  path: 'Carve/LaMa-ONNX/resolve/main/lama_fp32.onnx',
+};
+export const DET = {
+  file: 'ch_PP-OCRv4_det_infer.onnx',
+  size: 4745517,
+  path: 'SWHL/RapidOCR/resolve/main/PP-OCRv4/ch_PP-OCRv4_det_infer.onnx',
+};
+const MODEL_FILE = LAMA.file;
 
-function modelSources() {
-  const local = new URL('../models/' + MODEL_FILE, import.meta.url).href;
-  const hf = 'https://huggingface.co/' + MODEL_PATH;
-  const mirror = 'https://hf-mirror.com/' + MODEL_PATH;
+function modelSources(spec) {
+  const local = new URL('../models/' + spec.file, import.meta.url).href;
+  const hf = 'https://huggingface.co/' + spec.path;
+  const mirror = 'https://hf-mirror.com/' + spec.path;
   let inChina = false;
   try {
     const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || '';
@@ -124,10 +134,10 @@ async function loadOrt() {
 /* ------------------------------------------------------------------ */
 /* 下载模型（带进度）                                                    */
 /* ------------------------------------------------------------------ */
-async function fetchWithProgress(url, onProgress, signal) {
+async function fetchWithProgress(url, onProgress, signal, expected) {
   const res = await fetch(url, { signal, mode: 'cors' });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const total = Number(res.headers.get('content-length')) || MODEL_SIZE_BYTES;
+  const total = Number(res.headers.get('content-length')) || expected;
   if (!res.body || !res.body.getReader) {
     const buf = await res.arrayBuffer();
     onProgress?.(buf.byteLength, total);
@@ -158,27 +168,28 @@ async function fetchWithProgress(url, onProgress, signal) {
   return out.buffer.slice(0, received);
 }
 
-async function downloadModel(onStatus) {
-  const cached = await cacheGet(MODEL_FILE);
-  if (cached && cached.byteLength > 1e8) {
+async function downloadModel(spec, onStatus) {
+  const minBytes = spec.size * 0.9;
+  const cached = await cacheGet(spec.file);
+  if (cached && cached.byteLength > minBytes) {
     onStatus?.({ stage: 'cache' });
     return cached;
   }
   const errors = [];
-  for (const url of modelSources()) {
+  for (const url of modelSources(spec)) {
     const ctrl = new AbortController();
     // 30 秒内一个字节都没收到就换下一个源
     let gotBytes = false;
     const timer = setTimeout(() => { if (!gotBytes) ctrl.abort(); }, 30000);
     try {
-      onStatus?.({ stage: 'download', url, loaded: 0, total: MODEL_SIZE_BYTES });
+      onStatus?.({ stage: 'download', url, loaded: 0, total: spec.size });
       const buf = await fetchWithProgress(url, (loaded, total) => {
         gotBytes = true;
         onStatus?.({ stage: 'download', url, loaded, total });
-      }, ctrl.signal);
+      }, ctrl.signal, spec.size);
       clearTimeout(timer);
-      if (buf.byteLength < 1e8) throw new Error('文件不完整');
-      await cachePut(MODEL_FILE, buf);
+      if (buf.byteLength < minBytes) throw new Error('文件不完整');
+      await cachePut(spec.file, buf);
       return buf;
     } catch (e) {
       clearTimeout(timer);
@@ -223,7 +234,7 @@ export class Engine {
 
     let buf = modelBuffer;
     if (buf) await cachePut(MODEL_FILE, buf);
-    else buf = await downloadModel(onStatus);
+    else buf = await downloadModel(LAMA, onStatus);
 
     onStatus?.({ stage: 'init' });
     const tryCreate = async (ep) => {
@@ -270,6 +281,47 @@ export class Engine {
         image: new ort.Tensor('float32', img, [1, 3, S, S]),
         mask: new ort.Tensor('float32', msk, [1, 1, S, S]),
       });
+      return out[this.session.outputNames[0]].data;
+    };
+  }
+}
+
+/** 文字检测模型（自动识别水印用），体积小，用 CPU 推理即可 */
+export class DetEngine {
+  constructor() {
+    this.session = null;
+    this.loading = null;
+  }
+
+  get ready() {
+    return !!this.session;
+  }
+
+  load(onStatus) {
+    if (this.session) return Promise.resolve(this);
+    if (!this.loading) {
+      this.loading = (async () => {
+        const ort = await loadOrt();
+        ort.env.wasm.wasmPaths = ortBase;
+        if (!ort.env.wasm.numThreads) {
+          ort.env.wasm.numThreads = globalThis.crossOriginIsolated ? Math.min(8, navigator.hardwareConcurrency || 4) : 1;
+        }
+        const buf = await downloadModel(DET, onStatus);
+        this.session = await ort.InferenceSession.create(buf, { executionProviders: ['wasm'], graphOptimizationLevel: 'all' });
+        return this;
+      })().catch((e) => {
+        this.loading = null;
+        throw e;
+      });
+    }
+    return this.loading;
+  }
+
+  /** detect.detectWatermarks 所需的 runDet 回调 */
+  get runDet() {
+    return async (x, w, h) => {
+      const ort = globalThis.ort;
+      const out = await this.session.run({ x: new ort.Tensor('float32', x, [1, 3, h, w]) });
       return out[this.session.outputNames[0]].data;
     };
   }

@@ -56,7 +56,7 @@ function filter2d(img, w, hgt, r, isMax) {
 }
 
 /** 白色水印用开运算（先腐蚀后膨胀）抹掉细亮笔画；黑色水印用闭运算 */
-function morphBackground(wm, W, H, box, idx, r, white) {
+export function morphBackground(wm, W, H, box, idx, r, white) {
   const x0 = Math.max(0, box.x0 - r), y0 = Math.max(0, box.y0 - r);
   const x1 = Math.min(W - 1, box.x1 + r), y1 = Math.min(H - 1, box.y1 + r);
   const w = x1 - x0 + 1, h = y1 - y0 + 1;
@@ -81,7 +81,7 @@ function morphBackground(wm, W, H, box, idx, r, white) {
 }
 
 /** 统计每个像素相对背景 bg 的 α（只统计符合“向颜色 C 混合”模型的像素） */
-function alphaHistogram(img, imgStride, bg, idx, C) {
+export function alphaHistogram(img, imgStride, bg, idx, C) {
   const hist = new Float64Array(101);
   for (let k = 0; k < idx.length; k++) {
     const p = idx[k] * imgStride;
@@ -102,7 +102,7 @@ function alphaHistogram(img, imgStride, bg, idx, C) {
 }
 
 /** α=k/100 处的尖峰显著度：基线取左右两侧中较高的一侧，单调下降的纹理分布不会被误认为尖峰 */
-function prominenceAt(hist, k) {
+export function prominenceAt(hist, k) {
   const s3 = hist[k - 1] + hist[k] + hist[k + 1];
   let left = 0, right = 0;
   for (let d = 5; d <= 9; d++) {

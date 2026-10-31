@@ -45,10 +45,11 @@
       <div class="drop">
         <div class="drop-icon">🖼️</div>
         <h2>点击、拖拽或粘贴图片</h2>
-        <p>用画笔涂抹水印 → 点击「去除水印」，即可无痕消除</p>
+        <p>打开图片后<b>自动识别并去除</b>水印；没识别到的，用画笔涂一下即可</p>
         <button id="btnOpen2" class="btn primary big">选择图片</button>
         <ul class="features">
-          <li>🎯 只修复涂抹区域，其余像素与原图<b>完全一致</b></li>
+          <li>🤖 <b>自动识别</b>抖音号、小红书号、平铺/倾斜半透明水印和角落 Logo</li>
+          <li>🎯 只修复水印区域，其余像素与原图<b>完全一致</b></li>
           <li>🪄 自动扩展边缘，连同水印的<b>描边、阴影、光晕</b>一起去除</li>
           <li>🔍 半透明水印自动<b>反向还原</b>真实像素，人脸文字不变形</li>
           <li>🔒 全程在浏览器本地运行，图片<b>不上传</b>任何服务器</li>
@@ -91,7 +92,8 @@
       <button id="btnClear" class="btn" title="清除涂抹">清除</button>
       <button id="btnCompare" class="btn" title="按住查看原图">按住对比</button>
       <button id="btnFit" class="btn icon" title="适应窗口 (0)">⤢</button>
-      <button id="btnRun" class="btn primary run" disabled>✨ 去除水印</button>
+      <button id="btnDetect" class="btn" title="自动识别水印 (A)" disabled>🤖 识别</button>
+      <button id="btnRun" class="btn primary run" disabled>✨ 一键去水印</button>
     </div>
   </footer>
 
@@ -99,6 +101,22 @@
     <div class="panel-head">
       <h3>设置</h3>
       <button id="btnCloseSettings" class="btn icon">✕</button>
+    </div>
+    <div class="field">
+      <label>打开图片后</label>
+      <div class="seg small">
+        <button class="opt" data-autorun="1">自动识别并去除</button>
+        <button class="opt" data-autorun="0">手动</button>
+      </div>
+      <p class="hint">没有涂抹时点「一键去水印」也会先自动识别。识别结果显示为红色，可用画笔/擦除修改。</p>
+    </div>
+    <div class="field">
+      <label>自动识别范围</label>
+      <div class="seg small">
+        <button class="opt" data-scope="watermark">只去水印（推荐）</button>
+        <button class="opt" data-scope="all">所有文字</button>
+      </div>
+      <p class="hint">「只去水印」：半透明文字水印 + 图片四周和角落的文字/Logo，画面中间的正常文字（招牌等）会保留。</p>
     </div>
     <div class="field">
       <label>修复模式</label>
@@ -124,8 +142,8 @@
     </div>
     <div class="field">
       <label>批量处理</label>
-      <button id="btnBatch" class="btn block" disabled>📚 用当前涂抹位置批量去水印</button>
-      <p class="hint">适合同一来源、水印位置相同的多张图片：先在当前图上涂好水印，再选择多张图片。</p>
+      <button id="btnBatch" class="btn block">📚 批量去水印（选择多张图片）</button>
+      <p class="hint">默认每张图自动识别水印。如果当前图片上有涂抹，则所有图片都套用相同位置（适合识别不到的同位置 Logo）。</p>
     </div>
     <div class="field">
       <label>AI 模型</label>
@@ -138,7 +156,7 @@
       <p class="hint">下载慢时，可手动下载 <a href="https://hf-mirror.com/Carve/LaMa-ONNX/resolve/main/lama_fp32.onnx" target="_blank" rel="noopener">lama_fp32.onnx</a> 后点「选择本地模型」。</p>
     </div>
     <div class="field about">
-      <p>快捷键：B 画笔 · R 框选 · E 擦除 · 空格 拖动 · [ ] 笔刷大小 · 滚轮 缩放 · Ctrl+Z 撤销 · Enter 去除</p>
+      <p>快捷键：A 自动识别 · Enter 一键去水印 · B 画笔 · R 框选 · E 擦除 · 空格 拖动 · [ ] 笔刷大小 · 滚轮 缩放 · Ctrl+Z 撤销</p>
       <p>请仅处理您拥有版权或已获授权的图片。</p>
     </div>
   </aside>

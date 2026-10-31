@@ -1,8 +1,10 @@
 import { removeWatermark, defaultExpand } from './core.js';
-import { Engine, clearModelCache, hasCachedModel } from './engine.js';
+import { Engine, DetEngine, clearModelCache, hasCachedModel } from './engine.js';
+import { detectWatermarks } from './detect.js';
 
 const $ = (id) => document.getElementById(id);
 const engine = new Engine();
+const detEngine = new DetEngine();
 
 const els = {
   stage: $('stage'),
@@ -45,6 +47,8 @@ const state = {
   tool: 'brush',
   brush: 36,
   mode: 'auto',
+  autoRun: localStorage.getItem('lvan-autorun') !== '0', // 打开图片后自动识别并去除
+  scope: localStorage.getItem('lvan-scope') || 'watermark', // 自动识别范围
   format: 'png',
   expand: 0, // 0 = 自动
   view: { scale: 1, tx: 0, ty: 0 },
@@ -172,6 +176,7 @@ async function openFile(file) {
     updateExpandLabel();
     // 后台预加载模型
     if (!engine.ready) engine.load(onModelStatus).catch(() => {});
+    if (state.autoRun) setTimeout(() => run({ auto: true }), 50);
   } catch (e) {
     toast(e.message, 4000);
   }
@@ -265,7 +270,7 @@ function updateButtons() {
   $('btnRedo').disabled = !state.future.length;
   $('btnDownload').disabled = !state.loaded;
   $('btnRun').disabled = !state.loaded;
-  $('btnBatch').disabled = !state.loaded;
+  $('btnDetect').disabled = !state.loaded;
 }
 
 /* ------------------------------------------------------------------ */
@@ -449,14 +454,79 @@ function effectiveExpand(W, H) {
   return state.expand > 0 ? state.expand : defaultExpand(W, H);
 }
 
-async function run() {
-  if (!state.loaded || state.busy) return;
-  if (!maskHasContent()) {
-    toast('请先用画笔涂抹（或框选）水印区域');
-    return;
+/** 把检测出的蒙版画到涂抹层上（红色），便于查看和修改 */
+function paintMask(mask, W, H) {
+  const id = ctx.mask.getImageData(0, 0, W, H);
+  const d = id.data;
+  for (let i = 0; i < mask.length; i++) {
+    if (!mask[i]) continue;
+    d[i * 4] = 255; d[i * 4 + 1] = 45; d[i * 4 + 2] = 85; d[i * 4 + 3] = 255;
   }
+  ctx.mask.putImageData(id, 0, 0);
+}
+
+async function ensureDet() {
+  if (detEngine.ready) return true;
+  try {
+    showBusy('正在加载水印识别模型…', null);
+    await detEngine.load((s) => {
+      if (s.stage === 'download') showBusy('正在下载水印识别模型（约 5MB，仅需一次）', s.total ? s.loaded / s.total : 0);
+    });
+    return true;
+  } catch (e) {
+    console.error(e);
+    toast('识别模型加载失败：' + e.message.split('\n')[0], 5000);
+    return false;
+  }
+}
+
+/** 自动识别当前图片上的水印，结果画到涂抹层。返回识别到的区域数 */
+async function autoDetect() {
+  if (!(await ensureDet())) return -1;
+  showBusy('正在自动识别水印…', null);
+  await nextFrame();
+  const W = state.W, H = state.H;
+  const img = ctx.img.getImageData(0, 0, W, H);
+  const { mask, regions } = await detectWatermarks(img.data, W, H, detEngine.runDet, { scope: state.scope });
+  if (regions.length) {
+    state.history.push(snapshot(false));
+    if (state.history.length > HISTORY_LIMIT) state.history.shift();
+    state.future = [];
+    paintMask(mask, W, H);
+    updateButtons();
+  }
+  return regions.length;
+}
+
+async function detectOnly() {
+  if (!state.loaded || state.busy) return;
   state.busy = true;
   try {
+    const n = await autoDetect();
+    if (n === 0) toast('没有识别到文字水印\n可以在设置里改为「所有文字」，或用画笔手动涂抹', 4000);
+    else if (n > 0) toast(`识别到 ${n} 处水印（红色区域）\n可用画笔/擦除修改后点「一键去水印」`, 4000);
+  } finally {
+    state.busy = false;
+    hideBusy();
+  }
+}
+
+async function run(opts = {}) {
+  if (!state.loaded || state.busy) return;
+  state.busy = true;
+  try {
+    if (!maskHasContent()) {
+      // 没有涂抹：自动识别
+      const n = await autoDetect();
+      if (n <= 0) {
+        if (n === 0) {
+          toast(opts.auto
+            ? '没有自动识别到文字水印\n请用画笔涂抹水印后点「一键去水印」'
+            : '没有识别到文字水印\n请用画笔涂抹（或框选）水印区域', 4500);
+        }
+        return;
+      }
+    }
     if (!(await ensureEngine())) return;
     showBusy('正在无痕去除水印…', 0);
     await nextFrame();
@@ -481,7 +551,7 @@ async function run() {
     updateButtons();
     const secs = ((performance.now() - t0) / 1000).toFixed(1);
     const tr = info?.translucent?.length ? `，其中 ${info.translucent.length} 处半透明水印已还原真实像素` : '';
-    toast(`✅ 完成（${secs} 秒${tr}）\n如有残留，可再涂抹一次`);
+    toast(`✅ 完成（${secs} 秒${tr}）\n如有残留，可涂抹后再点一次；不满意可撤销`);
   } catch (e) {
     console.error(e);
     toast('处理失败：' + e.message, 5000);
@@ -526,12 +596,11 @@ const batchResults = [];
 
 async function runBatch(files) {
   if (!files.length) return;
-  if (!maskHasContent()) {
-    toast('请先在当前图片上涂抹水印位置，批量处理会套用同样的位置');
-    return;
-  }
+  // 当前图片上有涂抹：所有图片套用同样的位置；否则每张图自动识别
+  const useMask = state.loaded && maskHasContent();
   state.busy = true;
   try {
+    if (!useMask && !(await ensureDet())) return;
     if (!(await ensureEngine())) return;
     $('settings').hidden = true;
     const list = $('batchList');
@@ -567,15 +636,29 @@ async function runBatch(files) {
         tmp.height = H;
         tctx.drawImage(im, 0, 0);
         URL.revokeObjectURL(url);
-        // 当前选区按比例缩放到这张图
-        mtmp.width = W;
-        mtmp.height = H;
-        mctx.clearRect(0, 0, W, H);
-        mctx.drawImage(els.mask, 0, 0, W, H);
-        const md = mctx.getImageData(0, 0, W, H).data;
-        const mask = new Uint8Array(W * H);
-        for (let i = 0; i < mask.length; i++) mask[i] = md[i * 4 + 3] > 0 ? 1 : 0;
         const imgData = tctx.getImageData(0, 0, W, H);
+        let mask;
+        if (useMask) {
+          // 当前选区按比例缩放到这张图
+          mtmp.width = W;
+          mtmp.height = H;
+          mctx.clearRect(0, 0, W, H);
+          mctx.drawImage(els.mask, 0, 0, W, H);
+          const md = mctx.getImageData(0, 0, W, H).data;
+          mask = new Uint8Array(W * H);
+          for (let i = 0; i < mask.length; i++) mask[i] = md[i * 4 + 3] > 0 ? 1 : 0;
+        } else {
+          st.textContent = '识别中…';
+          await nextFrame();
+          const det = await detectWatermarks(imgData.data, W, H, detEngine.runDet, { scope: state.scope });
+          if (!det.regions.length) {
+            st.textContent = '未识别到水印';
+            items[k].querySelector('.thumb').style.backgroundImage = `url(${URL.createObjectURL(file)})`;
+            continue;
+          }
+          mask = det.mask;
+          st.textContent = '去除中…';
+        }
         await nextFrame();
         const out = await removeWatermark(imgData.data, W, H, mask, engine.runModel, {
           expand: effectiveExpand(W, H),
@@ -684,7 +767,8 @@ function init() {
     ctx.mask.clearRect(0, 0, state.W, state.H);
   });
   $('btnFit').addEventListener('click', () => state.loaded && fitView());
-  $('btnRun').addEventListener('click', run);
+  $('btnRun').addEventListener('click', () => run());
+  $('btnDetect').addEventListener('click', detectOnly);
   $('btnUndo').addEventListener('click', undo);
   $('btnRedo').addEventListener('click', redo);
   $('btnDownload').addEventListener('click', download);
@@ -705,6 +789,19 @@ function init() {
   $('btnCloseSettings').addEventListener('click', () => ($('settings').hidden = true));
   bindSeg('[data-mode]', 'mode', 'mode');
   bindSeg('[data-format]', 'format', 'format');
+  bindSeg('[data-scope]', 'scope', 'scope');
+  bindSeg('[data-autorun]', 'autorun', 'autoRunStr');
+  document.querySelectorAll('[data-scope]').forEach((b) => {
+    b.classList.toggle('active', b.dataset.scope === state.scope);
+    b.addEventListener('click', () => localStorage.setItem('lvan-scope', state.scope));
+  });
+  document.querySelectorAll('[data-autorun]').forEach((b) => {
+    b.classList.toggle('active', (b.dataset.autorun === '1') === state.autoRun);
+    b.addEventListener('click', () => {
+      state.autoRun = b.dataset.autorun === '1';
+      localStorage.setItem('lvan-autorun', state.autoRun ? '1' : '0');
+    });
+  });
   els.expand.addEventListener('input', () => {
     state.expand = +els.expand.value;
     updateExpandLabel();
@@ -742,13 +839,7 @@ function init() {
 
   // 批量
   const batchInput = $('batchInput');
-  $('btnBatch').addEventListener('click', () => {
-    if (!maskHasContent()) {
-      toast('请先在当前图片上涂抹水印位置');
-      return;
-    }
-    batchInput.click();
-  });
+  $('btnBatch').addEventListener('click', () => batchInput.click());
   batchInput.addEventListener('change', () => {
     const files = [...batchInput.files].filter((f) => f.type.startsWith('image/'));
     batchInput.value = '';
@@ -784,6 +875,7 @@ function init() {
       case ']': setBrush(state.brush * 1.2); break;
       case '0': state.loaded && fitView(); break;
       case 'Enter': run(); break;
+      case 'a': case 'A': detectOnly(); break;
     }
   });
   window.addEventListener('keyup', (e) => {

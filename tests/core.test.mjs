@@ -152,4 +152,40 @@ let info2;
 await removeWatermark(wm, W, H, mask, fakeModel(), { mode: 'inpaint', onInfo: (i) => (info2 = i) });
 assert.equal(info2.translucent.length, 0);
 console.log('✔ 仅 AI 重绘模式正常');
+
+
+// 5. 自动识别：用假的文字检测器（直接给出文字位置）验证水印判定逻辑
+{
+  const { detectWatermarks, DET_LIMIT } = await import('../js/detect.js');
+  // 假检测器：在 “文字” 位置输出高概率（收缩后的核心区域）
+  const fakeDet = (rects) => async (x, w, h) => {
+    const p = new Float32Array(w * h);
+    const sx = w / W, sy = h / H;
+    for (const [x0, y0, x1, y1] of rects) {
+      for (let y = Math.round(y0 * sy); y < Math.round(y1 * sy); y++)
+        for (let xx = Math.round(x0 * sx); xx < Math.round(x1 * sx); xx++) p[y * w + xx] = 0.9;
+    }
+    return p;
+  };
+  // 半透明文字（画面中下部）→ 应被识别为半透明水印
+  const r1 = await detectWatermarks(wm, W, H, fakeDet([[125, 310, 585, 352]]));
+  assert.ok(r1.regions.length === 1 && r1.regions[0].kind === 'translucent', '半透明文字未被识别为水印');
+  console.log(`✔ 自动识别：半透明文字 → 水印（A≈${r1.regions[0].A}）`);
+  // 画面正中的不透明“招牌文字” → 默认保留
+  const sign = new Uint8ClampedArray(orig);
+  for (let y = 190; y < 230; y++) for (let x = 260; x < 440; x++) {
+    const p = (y * W + x) * 4;
+    if ((x >> 3) % 2 === 0) { sign[p] = 250; sign[p + 1] = 220; sign[p + 2] = 40; }
+  }
+  const r2 = await detectWatermarks(sign, W, H, fakeDet([[262, 195, 438, 225]]));
+  assert.equal(r2.regions.length, 0, '画面中间的正常文字被误判为水印');
+  const r3 = await detectWatermarks(sign, W, H, fakeDet([[262, 195, 438, 225]]), { scope: 'all' });
+  assert.equal(r3.regions.length, 1);
+  console.log('✔ 自动识别：画面中间的正常文字默认保留，「所有文字」模式下去除');
+  // 角落的不透明文字 → 水印
+  const r4 = await detectWatermarks(wm, W, H, fakeDet([[40, 40, 150, 80]]));
+  assert.ok(r4.regions.length === 1, '角落文字未被识别');
+  console.log('✔ 自动识别：角落文字/Logo → 水印');
+  void DET_LIMIT;
+}
 console.log('全部通过');
